@@ -4,6 +4,20 @@
 
 **新手入口：[懒人部署指南](docs/懒人部署指南.md)**（区分新机安装与旧机续训，命令逐块复制）。
 
+### 三行启动部署向导（Ubuntu 22.04 新机）
+
+要求：供应商已预装 Docker、Compose、驱动和 NVIDIA Container Toolkit，默认 runtime 为 `nvidia`，使用有 sudo 权限的普通用户，空白 Docker 环境，安装盘至少 50 GiB 可用。**不要在已有模型的服务器重新安装。**
+
+```bash
+git clone https://github.com/CsOH-Lawrence/deepracer-project.git
+cd deepracer-project
+bash deploy.sh
+```
+
+不想安装可先运行 `bash deploy.sh --check`，只检查，不下载镜像或修改配置。安装需交互输入 `DEPLOY` 确认；可加 `--model demo-model-001` 指定新模型名。脚本会安装项目依赖、固定版本训练平台、本地 MinIO 和看板，**不自动启动训练、不重装驱动、不更改 DNS 或防火墙、不覆盖旧目录**。
+
+向导 v1 已做本地单元测试和 Bash 语法检查，尚未在新的 GPU 虚拟机全流程实装验证；网络、镜像拉取、底层容器兼容性失败时会停止并保留文件，不能宣称任何云平台都能无障碍一键部署。失败后不要删除旧目录硬重跑，将报错交给部署者检查。
+
 域名访问方案：[阿里云 DNS + HTTPS + 登录保护](docs/域名与私有访问.md)。该文是待实施方案，不表示公网入口已经上线。
 
 ## 电脑、云服务器和 AI 分别做什么
