@@ -8,6 +8,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 UPSTREAM = 'https://github.com/aws-deepracer-community/deepracer-for-cloud.git'
@@ -55,7 +56,23 @@ def validate_model(value):
     return value
 
 
-def preflight(target):
+def school_guard():
+    """Read-only warning tripwires, not proof that a VM contains no database."""
+    for name in ('mysqld', 'mariadbd', 'postgres', 'sqlservr', 'mongod', 'oracle'):
+        if shutil.which('pgrep') and subprocess.run(
+                ['pgrep', '-x', name], stdout=subprocess.DEVNULL).returncode == 0:
+            fail('检测到数据库进程；拒绝在学生数据库所在虚机部署，请使用独立虚机')
+    database_ports = {1433, 1521, 3306, 5432, 27017}
+    for table in ('/proc/net/tcp', '/proc/net/tcp6'):
+        path = Path(table)
+        if path.exists():
+            for line in path.read_text().splitlines()[1:]:
+                fields = line.split()
+                if len(fields) > 3 and fields[3] == '0A' and int(fields[1].rsplit(':', 1)[1], 16) in database_ports:
+                    fail('检测到常见数据库监听端口；请改用独立训练虚机')
+
+
+def host_checks(target):
     if sys.platform != 'linux' or not Path('/etc/os-release').exists():
         fail('只支持 Ubuntu 22.04 服务器；Windows .bat 不能直接在这里运行')
     release = dict(line.split('=', 1) for line in Path('/etc/os-release').read_text().splitlines() if '=' in line)
@@ -70,20 +87,90 @@ def preflight(target):
     if any(c.isspace() for c in str(target)):
         fail('上游不支持带空格的安装路径')
     if Path('/.dockerenv').exists():
-        fail('检测到容器环境；请选择供应商 GPU 虚拟机')
+        fail('检测到容器环境；请选择独立虚拟机')
     if shutil.which('systemd-detect-virt'):
         result = subprocess.run(['systemd-detect-virt', '--container', '--quiet'])
         if result.returncode == 0:
             fail('检测到容器环境；不尝试绕过宿主机限制')
-    for command in ('docker', 'nvidia-smi', 'sudo', 'systemctl'):
+
+
+def prepare_docker(target, model):
+    """Explicit opt-in only, new dedicated VM; never remove conflicting packages."""
+    host_checks(target)
+    school_guard()
+    if shutil.disk_usage(Path.home()).free < 50 * 1024 ** 3:
+        fail('可用空间不足 50 GiB，不开始系统软件安装')
+    memory = dict(line.split(':', 1) for line in Path('/proc/meminfo').read_text().splitlines())
+    if int(memory['MemAvailable'].split()[0]) * 1024 < 20 * 1024 ** 3:
+        fail('当前可用内存不足 20 GiB，不开始系统软件安装')
+    if not shutil.which('sudo'):
+        fail('需要管理员提供 sudo 权限')
+    if os.uname().machine != 'x86_64':
+        fail('Docker 准备步骤只适配 Intel/AMD x86_64 Ubuntu 22.04')
+    for path in ('/var/lib/docker', '/var/lib/containerd', '/etc/apt/sources.list.d/docker.sources',
+                 '/etc/apt/sources.list.d/docker.list', '/etc/apt/keyrings/docker.asc'):
+        if Path(path).exists():
+            fail('发现现有 Docker/containerd 数据或软件源；不自动替换，请管理员核实')
+    for package in ('docker.io', 'containerd', 'runc', 'podman-docker', 'docker-ce', 'containerd.io'):
+        result = subprocess.run(['dpkg-query', '-W', '-f=${db:Status-Status}', package],
+                                text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        if result.returncode == 0 and result.stdout.strip() == 'installed':
+            fail('存在容器运行时软件包；不卸载、不升级，请管理员自行准备 Docker')
+    print('额外权限：添加 Docker 官方 apt 源、安装 Docker/Compose、启动 Docker 服务，')
+    print('并将当前专用部署账号加入 docker 组（相当于主机级权限）。不向学生授予该权限。')
+    if input('管理员确认这是独立无业务数据虚机，输入 DEDICATED_VM：').strip() != 'DEDICATED_VM':
+        fail('未确认独立虚机')
+    if input('同意上述系统及权限变更请输入 INSTALL_DOCKER：').strip() != 'INSTALL_DOCKER':
+        fail('未授权安装 Docker')
+    run('sudo', '-v')
+    run('sudo', 'env', 'NEEDRESTART_MODE=l', 'apt-get', 'update')
+    run('sudo', 'env', 'NEEDRESTART_MODE=l', 'apt-get', 'install', '-y', '--no-remove',
+        'ca-certificates', 'curl', 'gnupg')
+    with tempfile.TemporaryDirectory(prefix='drfc-docker-') as temporary:
+        key = Path(temporary) / 'docker.asc'
+        run('curl', '-fsSL', '--connect-timeout', '15', '--max-time', '60',
+            'https://download.docker.com/linux/ubuntu/gpg', '-o', key)
+        fingerprint = run('gpg', '--batch', '--show-keys', '--with-colons', key, capture=True)
+        if '9DC858229FC7DD38854AE2D88D81803C0EBFCD88' not in fingerprint:
+            fail('Docker 仓库签名指纹不匹配，不安装；可能需要管理员核查官方密钥更新')
+        source = Path(temporary) / 'docker.sources'
+        source.write_text('Types: deb\nURIs: https://download.docker.com/linux/ubuntu\n'
+                          'Suites: jammy\nComponents: stable\nArchitectures: amd64\n'
+                          'Signed-By: /etc/apt/keyrings/docker.asc\n', encoding='utf-8')
+        run('sudo', 'install', '-d', '-m', '755', '/etc/apt/keyrings')
+        run('sudo', 'install', '-m', '644', key, '/etc/apt/keyrings/docker.asc')
+        run('sudo', 'install', '-m', '644', source, '/etc/apt/sources.list.d/docker.sources')
+    run('sudo', 'env', 'NEEDRESTART_MODE=l', 'apt-get', 'update')
+    run('sudo', 'env', 'NEEDRESTART_MODE=l', 'apt-get', 'install', '-y', '--no-remove',
+        'docker-ce', 'docker-ce-cli', 'containerd.io', 'docker-buildx-plugin', 'docker-compose-plugin')
+    run('sudo', 'systemctl', 'enable', '--now', 'docker')
+    username = run('id', '-un', capture=True)
+    if not re.fullmatch(r'[a-z_][a-z0-9_-]*', username):
+        fail('无法安全识别部署用户名')
+    run('sudo', 'usermod', '-aG', 'docker', username)
+    print('Docker 已准备；以同一部署用户的新组成员身份继续，仍需确认项目安装。')
+    run('sudo', '-H', '-u', username, 'python3', SOURCE / 'tools/deploy.py',
+        '--arch', 'cpu', '--school', '--model', model)
+
+
+def preflight(target, arch='gpu', school=False):
+    host_checks(target)
+    commands = ('docker', 'sudo', 'systemctl') + (('nvidia-smi',) if arch == 'gpu' else ())
+    for command in commands:
         if not shutil.which(command):
-            fail(f'缺少 {command}；请选择已预装 Docker / NVIDIA Toolkit 的 GPU 虚拟机')
+            fail(f'缺少 {command}；请管理员先准备 Docker Engine / Compose，GPU 模式另需 NVIDIA Toolkit')
+    if school:
+        school_guard()
+        memory = dict(line.split(':', 1) for line in Path('/proc/meminfo').read_text().splitlines())
+        available = int(memory['MemAvailable'].split()[0]) * 1024
+        if available < 20 * 1024 ** 3:
+            fail('CPU 试点要求至少 20 GiB 当前可用内存；此门槛不是并发容量保证')
     if shutil.disk_usage(Path.home()).free < 50 * 1024 ** 3:
         fail('安装盘可用空间不足 50 GiB，请先扩容；向导不会删除现有文件')
     info = json.loads(run('docker', 'info', '--format', '{{json .}}', capture=True))
-    if 'nvidia' not in info.get('Runtimes', {}):
+    if arch == 'gpu' and 'nvidia' not in info.get('Runtimes', {}):
         fail('Docker 未配置 NVIDIA runtime；请先按官方 Toolkit 文档配置')
-    if info.get('DefaultRuntime') != 'nvidia':
+    if arch == 'gpu' and info.get('DefaultRuntime') != 'nvidia':
         fail('默认 runtime 不是 nvidia。请先按指南第3步配置；向导不会重启已有 Docker')
     if run('docker', 'ps', '-aq', capture=True):
         fail('检测到已有容器，包括停止的容器。为避免干扰其他项目，向导仅接受空白 Docker 主机')
@@ -100,18 +187,20 @@ def preflight(target):
             except OSError:
                 fail(f'端口 {port} 已占用，不停止原服务')
     run('docker', 'compose', 'version')
-    run('nvidia-smi', '-L')
-    print('基础检查通过：Ubuntu 22.04 / Docker / NVIDIA / 磁盘 / 无旧安装', flush=True)
+    if arch == 'gpu':
+        run('nvidia-smi', '-L')
+    print('基础检查通过：Ubuntu 22.04 / Docker / ' + arch + ' / 磁盘 / 无旧安装', flush=True)
 
 
-def setup(target, model):
+def setup(target, model, arch='gpu'):
     # Interactive sudo and apt: no downloaded shell installers, driver replacement,
     # disk partitioning, docker restart, firewall edits or credential output.
     run('sudo', '-v')
-    run('sudo', 'apt-get', 'update')
-    run('sudo', 'apt-get', 'install', '-y', 'git', 'jq', 'awscli', 'python3-venv')
+    run('sudo', 'env', 'NEEDRESTART_MODE=l', 'apt-get', 'update')
+    run('sudo', 'env', 'NEEDRESTART_MODE=l', 'apt-get', 'install', '-y', '--no-remove', 'git', 'jq', 'awscli', 'python3-venv')
     run('docker', 'run', '--rm', 'hello-world')
-    run('docker', 'run', '--rm', '--gpus', 'all', CUDA, 'nvidia-smi')
+    if arch == 'gpu':
+        run('docker', 'run', '--rm', '--gpus', 'all', CUDA, 'nvidia-smi')
     run('git', 'clone', UPSTREAM, target)
     run('git', 'checkout', '--detach', REVISION, cwd=target)
     if run('git', 'rev-parse', 'HEAD', cwd=target, capture=True) != REVISION:
@@ -121,7 +210,7 @@ def setup(target, model):
     run(python, '-m', 'pip', 'install', '--index-url', 'https://pypi.org/simple', '-r', 'requirements.txt', cwd=target)
     run(python, '-m', 'pip', 'check')
     dependencies = json.loads((target / 'defaults/dependencies.json').read_text())
-    simapp = 'awsdeepracercommunity/deepracer-simapp:' + dependencies['containers']['simapp'] + '-gpu'
+    simapp = 'awsdeepracercommunity/deepracer-simapp:' + dependencies['containers']['simapp'] + '-' + arch
     # Pull every image explicitly; upstream init alone does not reliably fail fast.
     for image in (simapp, 'minio/minio:latest'):
         run('docker', 'pull', image)
@@ -130,7 +219,7 @@ def setup(target, model):
             'docker', 'network', 'ls', '--format', '{{.Name}}', capture=True).splitlines():
         fail('下载期间检测到其他容器或训练网络，停止初始化以避免干扰')
     # All prerequisites are complete before the one-time init overwrites templates.
-    run('bash', 'bin/init.sh', '-a', 'gpu', '-c', 'local', '-s', 'compose', cwd=target)
+    run('bash', 'bin/init.sh', '-a', arch, '-c', 'local', '-s', 'compose', cwd=target)
     run('docker', 'image', 'inspect', simapp, '--format', '{{.Id}}')
     env_set(target / 'system.env', 'DR_CAMERA_KVS_ENABLE', 'False')
     env_set(target / 'system.env', 'DR_WORKERS', '1')
@@ -146,6 +235,10 @@ def setup(target, model):
         document = loopback_ports(json.loads(converted))
         if name == 'docker-compose-local.yml':
             document['services']['minio']['restart'] = 'unless-stopped'
+        if arch == 'cpu':
+            for service in document.get('services', {}).values():
+                service['cpus'] = '8.0' if name != 'docker-compose-local.yml' else '2.0'
+                service['mem_limit'] = '8g' if name != 'docker-compose-local.yml' else '2g'
         # JSON is a YAML subset accepted by Docker Compose.
         path.write_text(json.dumps(document, indent=2) + '\n', encoding='utf-8')
     # Isolate upstream's older shell assumptions from this Python process.
@@ -197,7 +290,7 @@ def setup(target, model):
     print('\n部署检查通过，尚未开始训练。默认奖励/动作空间，没有替你提速。')
     print('模型：' + model + '\n上游版本：' + REVISION)
     print('看板只监听 127.0.0.1:3000，请用 SSH 隧道访问。')
-    print('确认平台自动关机已设置后，另行在服务器执行：')
+    print('部署模式：' + arch + '；确认管理员批准训练时段与停止安排后，再另行执行：')
     print('cd ' + str(target) + '\nsource bin/activate.sh\ndr-start-training -q')
     print('本机隧道：ssh -N -T -L 127.0.0.1:13791:127.0.0.1:3000 USER@YOUR_SERVER')
     print('摄像头须在训练启动后查实际端口。没有修改 DNS、防火墙或公网认证。')
@@ -206,24 +299,41 @@ def setup(target, model):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true', help='只读检查，不安装、不拉镜像、不创建配置')
+    parser.add_argument('--arch', choices=('cpu', 'gpu'), default='gpu')
+    parser.add_argument('--school', action='store_true', help='专用学校虚机 CPU 基础试点，不是多人平台')
+    parser.add_argument('--install-docker', action='store_true', help='仅学校新机：额外确认后准备缺失的 Docker')
     parser.add_argument('--model', type=validate_model,
                         default='my-first-model-' + time.strftime('%Y%m%d-%H%M%S'))
     args = parser.parse_args(argv)
     target = Path.home() / 'deepracer-for-cloud'
     try:
-        preflight(target)
+        if args.school and args.arch != 'cpu':
+            fail('学校入口只允许 CPU 模式')
+        if args.install_docker and not (args.school and args.arch == 'cpu'):
+            fail('--install-docker 仅允许学校 CPU 入口使用')
+        if args.install_docker and not args.check and not shutil.which('docker'):
+            prepare_docker(target, args.model)
+            return 0
+        preflight(target, args.arch, args.school)
         if args.check:
             return 0
         print('\n将安装 apt/Python 项目依赖、固定版本训练平台、MinIO 和只读看板。')
         print('可能下载数 GB 镜像；会创建 Docker 网络和 systemd 看板服务。')
         print('不会安装/重装 Docker 或驱动，不重启 Docker、不分区、不清理旧文件、不开始训练。')
         print('目标：' + str(target))
-        if input('请先设置平台自动关机；确认已设置并接受上述操作后输入 DEPLOY：').strip() != 'DEPLOY':
+        if args.school:
+            print('这是基础环境试点，不包含学生登录/队列/不可信奖励代码的安全隔离。')
+            print('不得与学生数据库部署在同一虚机。数据库探测不全面，必须由管理员核实。')
+            print('Docker 会创建网络并可能修改 iptables；本脚本不执行 ufw/DNS 更改不等于零网络影响。')
+            if input('仅专用无业务数据的虚机可安装；管理员确认后输入 DEDICATED_VM：').strip() != 'DEDICATED_VM':
+                print('已取消。')
+                return 1
+        if input('确认已安排训练时段/停止方式并接受上述操作后输入 DEPLOY：').strip() != 'DEPLOY':
             print('已取消，未安装。')
             return 1
         # Recheck after human input to catch intervening container/port changes.
-        preflight(target)
-        setup(target, args.model)
+        preflight(target, args.arch, args.school)
+        setup(target, args.model, args.arch)
         return 0
     except (RuntimeError, OSError, ValueError, subprocess.CalledProcessError) as error:
         # Avoid echoing raw command output which could contain credentials.

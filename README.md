@@ -4,6 +4,8 @@
 
 **新手入口：[懒人部署指南](docs/懒人部署指南.md)**（区分新机安装与旧机续训，命令逐块复制）。
 
+**给学校老师：[CPU 一键试点部署、权限与风险说明](docs/发给老师_CPU部署与权限说明.md)**。学校独立 Ubuntu 22.04 虚机使用 `bash deploy-school-cpu.sh --install-docker`；管理员先读审批清单。该入口不要求 GPU，不自动训练，**不是已完成的多人学生训练平台**，不要在数据库所在虚机运行。
+
 ### 三行启动部署向导（Ubuntu 22.04 新机）
 
 要求：供应商已预装 Docker、Compose、驱动和 NVIDIA Container Toolkit，默认 runtime 为 `nvidia`，使用有 sudo 权限的普通用户，空白 Docker 环境，安装盘至少 50 GiB 可用。**不要在已有模型的服务器重新安装。**
