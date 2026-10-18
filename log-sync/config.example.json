@@ -1,0 +1,16 @@
+{
+  "host": "YOUR_SERVER",
+  "port": 22,
+  "username": "YOUR_SSH_USER",
+  "known_hosts": "../private/known_hosts",
+  "model": "YOUR_MODEL_PREFIX",
+  "source_models": [],
+  "outer_containers": ["deepracer-0-rl_coach-1", "deepracer-0-robomaker-1"],
+  "known_trainers": {},
+  "metrics_remote_port": 3000,
+  "metrics_interval_seconds": 10,
+  "discovery_interval_seconds": 30,
+  "log_directory": "../logs/my-training-session",
+  "rotate_bytes": 33554432,
+  "minimum_free_bytes": 1073741824
+}
