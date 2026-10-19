@@ -182,7 +182,12 @@ def main():
             if encoding:
                 self.send_header("Content-Encoding", encoding)
             self.end_headers()
-            self.wfile.write(body)
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                # The browser navigated away or the SSH tunnel dropped; the
+                # traceback would only add noise to journald.
+                pass
 
     server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
     server.daemon_threads = True
