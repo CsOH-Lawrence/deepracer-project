@@ -27,8 +27,11 @@ ssh -N -T -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -L 127.0.0.1:137
 ## 指标说明
 
 - 单回合奖励与最近 20 回合移动平均；同一训练回合的多个评估试次聚合成评估点。
-- 平均完成率不是成功跑完圈数占比；“完整跑圈/训练回合”只统计训练部分。
+- 平均完成率不是成功跑完圈数占比；“完整跑圈/训练回合”只统计训练部分，且要求 `Lap complete` 与完成率 100% 同时成立。
 - API 保留 `phase`、`status`、`progress`、`seconds` 等字段，可独立筛选完整评估圈。
 - 数据刷新不代表训练一定仍在运行，应同时检查时间戳和容器状态。
+- 服务端按 `--cache-seconds`（默认 8 秒）缓存，并用 S3 的 ETag 发条件请求：文件没变时复用已解析的行，不重复下载。
+  `--max-rows`（默认 20000）限制单次响应行数，截断时返回 `truncated: true` 与原始 `total_rows`，页面会注明只显示最近的部分。
+  响应超过 2 KB 且客户端支持时使用 gzip。
 
 测试：在本目录运行 `.venv/bin/python -m unittest -v test_server.py`。Windows 使用 `.venv/Scripts/python.exe`。
