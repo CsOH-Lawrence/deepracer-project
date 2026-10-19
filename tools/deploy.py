@@ -20,8 +20,13 @@ SOURCE = Path(__file__).resolve().parents[1]
 def run(*args, cwd=None, capture=False):
     if not capture:
         print('[执行] ' + ' '.join(map(str, args)), flush=True)
-    result = subprocess.run(list(map(str, args)), cwd=cwd, check=True,
-                            text=True, stdout=subprocess.PIPE if capture else None)
+    try:
+        result = subprocess.run(list(map(str, args)), cwd=cwd, check=True,
+                                text=True, stdout=subprocess.PIPE if capture else None)
+    except subprocess.CalledProcessError as error:
+        # Repeat the command only. Captured output may contain credentials.
+        raise RuntimeError('命令执行失败（退出码 {}）：{}'.format(
+            error.returncode, ' '.join(map(str, error.cmd)))) from None
     return result.stdout.strip() if capture else ''
 
 
@@ -207,7 +212,10 @@ def setup(target, model, arch='gpu'):
         fail('上游版本不匹配')
     run('python3', '-m', 'venv', target / '.venv')
     python = target / '.venv/bin/python'
-    run(python, '-m', 'pip', 'install', '--index-url', 'https://pypi.org/simple', '-r', 'requirements.txt', cwd=target)
+    # Respect an internal mirror when the administrator exports one; pinning the
+    # public index here would silently break offline/air-gapped installs.
+    index_url = os.environ.get('PIP_INDEX_URL') or 'https://pypi.org/simple'
+    run(python, '-m', 'pip', 'install', '--index-url', index_url, '-r', 'requirements.txt', cwd=target)
     run(python, '-m', 'pip', 'check')
     dependencies = json.loads((target / 'defaults/dependencies.json').read_text())
     simapp = 'awsdeepracercommunity/deepracer-simapp:' + dependencies['containers']['simapp'] + '-' + arch
@@ -245,13 +253,18 @@ def setup(target, model, arch='gpu'):
     run('bash', '-c', 'source bin/activate.sh && dr-upload-custom-files', cwd=target)
     if run('docker', 'inspect', 's3-minio-1', '--format', '{{.State.Running}}', capture=True) != 'true':
         fail('MinIO 未运行；未创建看板服务，不会开始训练')
-    run(python, '-c',
-        "import boto3; from botocore.config import Config; "
-        "s=boto3.Session(profile_name='minio').client('s3',endpoint_url='http://127.0.0.1:9000',"
-        "config=Config(connect_timeout=5,read_timeout=5)); "
-        "[s.head_object(Bucket='bucket',Key='custom_files/'+n) for n in "
-        "('reward_function.py','model_metadata.json','hyperparameters.json')]; "
-        "print('三份训练配置已在私有MinIO验证')")
+    try:
+        run(python, '-c',
+            "import boto3; from botocore.config import Config; "
+            "s=boto3.Session(profile_name='minio').client('s3',endpoint_url='http://127.0.0.1:9000',"
+            "config=Config(connect_timeout=5,read_timeout=5)); "
+            "[s.head_object(Bucket='bucket',Key='custom_files/'+n) for n in "
+            "('reward_function.py','model_metadata.json','hyperparameters.json')]; "
+            "print('三份训练配置已在私有MinIO验证')")
+    except RuntimeError:
+        # The raw boto3 error names neither the profile nor the likely fix.
+        fail('无法用 minio profile 读取私有 MinIO：请确认 ~/.aws/credentials 含 [minio] 段，'
+             '且 dr-upload-custom-files 已成功执行。向导不会创建或修改凭据，也不会开始训练')
     dashboard = target / 'local-metrics-dashboard'
     dashboard.mkdir()
     for name in ('server.py', 'index.html'):
@@ -273,20 +286,29 @@ def setup(target, model, arch='gpu'):
     run('sudo', 'systemctl', 'daemon-reload')
     run('sudo', 'systemctl', 'enable', '--now', 'drfc-metrics-dashboard.service')
     # Health + metrics verify S3 credentials and connectivity, not just process state.
+    import urllib.error
     import urllib.request
-    verified = False
+    verified, last_error = False, '没有响应'
     for _ in range(10):
         try:
             with urllib.request.urlopen('http://127.0.0.1:3000/api/metrics', timeout=5) as response:
                 metrics = json.load(response)
-            verified = metrics.get('model') == model and 'rows' in metrics
+            verified = isinstance(metrics, dict) and metrics.get('model') == model and 'rows' in metrics
             if verified:
                 break
-        except (OSError, ValueError):
-            pass
+            last_error = 'API 返回了非预期内容'
+            break
+        except urllib.error.HTTPError as error:
+            # 503 means the process runs but cannot read metrics; do not retry it blindly.
+            last_error = 'HTTP ' + str(error.code)
+            if error.code == 503:
+                break
+        except (OSError, ValueError) as error:
+            last_error = type(error).__name__
         time.sleep(1)
     if not verified:
-        fail('看板 API 未通过检查，请读取服务日志；未开始训练')
+        fail('看板 API 未通过检查（' + last_error + '）。先看 journalctl -u drfc-metrics-dashboard；'
+             '若是凭据问题，检查 ~/.aws/credentials 的 [minio] 段。未开始训练')
     print('\n部署检查通过，尚未开始训练。默认奖励/动作空间，没有替你提速。')
     print('模型：' + model + '\n上游版本：' + REVISION)
     print('看板只监听 127.0.0.1:3000，请用 SSH 隧道访问。')
