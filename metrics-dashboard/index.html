@@ -17,7 +17,7 @@
 <section class="panel"><h2>赛道完成率</h2><div class="legend"><span style="--c:#356f67">单回合完成率</span><span style="--c:#68dba9">20 回合移动平均</span><span style="--c:#ffbf69">评估平均完成率</span></div><div id="progress-chart"></div></section>
 </div>
 <section class="panel recent"><h2>最近回合</h2><table><thead><tr><th>回合</th><th>阶段</th><th>奖励</th><th>完成率</th><th>模拟耗时</th><th>结束原因</th></tr></thead><tbody id="rows"></tbody></table></section>
-<footer><div id="updated">等待第一次读取…</div><div>横轴为训练回合；评估点为同一训练回合对应的评估均值。奖励来自训练程序保存的统计，可能已经取整。模拟时间不是服务器真实耗时。</div><div>页面只读，不会启动、停止或修改训练。数据不更新也可能是训练正在评估、写入延迟或已停止，不代表正在持续训练。奖励更高不一定代表比赛成绩更好，请结合评估完成率判断。</div></footer>
+<footer><div id="updated">等待第一次读取…</div><div>横轴为训练回合；评估点为同一训练回合对应的评估均值。奖励来自训练程序保存的统计，可能已经取整。模拟时间不是服务器真实耗时。完整跑圈只统计「完成一圈」且完成率 100% 的训练回合。</div><div>页面只读，不会启动、停止或修改训练。数据不更新也可能是训练正在评估、写入延迟或已停止，不代表正在持续训练。奖励更高不一定代表比赛成绩更好，请结合评估完成率判断。</div></footer>
 <script>
 const el=id=>document.getElementById(id), average=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:0;
 let latest=null,busy=false;
@@ -44,10 +44,12 @@ function render(d){
   el('state').textContent='等待新模型数据 · 每 10 秒刷新';el('state').classList.remove('error');el('updated').textContent='新模型尚无统计，可能尚未启动或正在初始化。训练开始后自动显示曲线。';return;
  }
  latest=d;const train=d.rows.filter(r=>r.phase==='training'),evaluation=d.rows.filter(r=>r.phase==='evaluation'),recent=train.slice(-20);
- el('model').textContent='模型：'+d.model;el('episodes').textContent=train.length;el('reward').textContent=recent.length?average(recent.map(r=>r.reward)).toFixed(2):'—';el('progress').textContent=recent.length?average(recent.map(r=>r.progress)).toFixed(1)+'%':'—';el('laps').textContent=train.filter(r=>r.status==='Lap complete'||r.progress>=100).length+' / '+train.length;
+ el('model').textContent='模型：'+d.model;el('episodes').textContent=train.length;el('reward').textContent=recent.length?average(recent.map(r=>r.reward)).toFixed(2):'—';el('progress').textContent=recent.length?average(recent.map(r=>r.progress)).toFixed(1)+'%':'—';el('laps').textContent=train.filter(r=>r.status==='Lap complete'&&r.progress>=100).length+' / '+train.length;
  chart('reward-chart',train,evaluation,'reward',['#437696','#73d7f5']);chart('progress-chart',train,evaluation,'progress',['#356f67','#68dba9']);
   el('rows').replaceChildren();for(const r of d.rows.slice(-8).reverse()){const tr=document.createElement('tr');for(const value of [r.episode,r.phase==='training'?'训练':'评估',r.reward.toFixed(2),r.progress.toFixed(1)+'%',r.seconds.toFixed(2)+' s',({'Off track':'冲出赛道','Lap complete':'完成一圈','Crashed':'碰撞','Immobilized':'卡住/无法前进'})[r.status]||r.status]){const td=document.createElement('td');td.textContent=value;tr.append(td);}el('rows').append(tr);}
- const age=Math.max(0,Math.floor((Date.now()-Date.parse(d.modified))/1000));el('state').textContent=age>60?'数据 '+age+' 秒未更新':'统计已连接 · 每 10 秒刷新';el('state').classList.remove('error');el('updated').textContent='统计文件更新：'+new Date(d.modified).toLocaleString('zh-CN',{hour12:false})+' · 页面读取：'+new Date(d.fetched).toLocaleTimeString('zh-CN',{hour12:false})+' · 已记录评估回合：'+evaluation.length;
+ const stamp=Date.parse(d.modified),age=Number.isFinite(stamp)?Math.max(0,Math.floor((Date.now()-stamp)/1000)):null;
+ el('state').textContent=age!==null&&age>60?'数据 '+age+' 秒未更新':'统计已连接 · 每 10 秒刷新';el('state').classList.remove('error');
+ el('updated').textContent='统计文件更新：'+(Number.isFinite(stamp)?new Date(stamp).toLocaleString('zh-CN',{hour12:false}):'未知')+' · 页面读取：'+new Date(d.fetched).toLocaleTimeString('zh-CN',{hour12:false})+' · 已记录评估回合：'+evaluation.length+(d.truncated?' · 仅显示最近 '+d.rows.length+' 条（共 '+d.total_rows+' 条）':'');
 }
 async function refresh(){if(busy)return;busy=true;try{const response=await fetch('/api/metrics',{cache:'no-store'}),d=await response.json();if(!response.ok)throw Error(d.error||'读取失败');render(d);}catch(e){el('state').textContent='读取失败 · 自动重试';el('state').classList.add('error');el('updated').textContent=e.message+' 上一次成功的数据保留在页面中。';}finally{busy=false;}}
 refresh();setInterval(refresh,10000);
