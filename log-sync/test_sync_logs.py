@@ -26,6 +26,13 @@ class SyncTests(unittest.TestCase):
         self.assertEqual(overlap_since("2026-10-17T00:00:01.123456789Z"), "2026-10-16T23:59:59+00:00")
         self.assertIsNone(overlap_since(None))
 
+    def test_cursor_accepts_every_timestamp_precision(self):
+        # Docker --timestamps prints nanoseconds; older interpreters only parse
+        # up to microseconds. All three shapes must resolve to the same second.
+        for stamp in ("2026-10-17T00:00:01.123456789Z", "2026-10-17T00:00:01.123456Z",
+                      "2026-10-17T00:00:01.123Z", "2026-10-17T00:00:01Z"):
+            self.assertEqual(overlap_since(stamp), "2026-10-16T23:59:59+00:00", stamp)
+
     def test_model_selection_uses_exact_prefix(self):
         self.assertEqual(model_prefix(["SM_HP_S3_PREFIX=model-v3"]), "model-v3")
         self.assertEqual(model_prefix(['SM_HPS={"s3_prefix":"model-v4"}']), "model-v4")
