@@ -41,6 +41,10 @@ def overlap_since(stamp):
     if not stamp:
         return None
     # Overlap intentionally provides at-least-once delivery after reconnect.
+    # Docker --timestamps prints nanoseconds, but datetime.fromisoformat on
+    # Python 3.10 (the Ubuntu 22.04 default this targets) accepts at most
+    # microseconds. Trim the extra digits instead of failing after a reconnect.
+    stamp = re.sub(r"(\.\d{6})\d*", r"\1", stamp, count=1)
     parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
     return (parsed - timedelta(seconds=2)).isoformat(timespec="seconds")
 
