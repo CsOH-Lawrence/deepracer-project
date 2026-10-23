@@ -71,9 +71,12 @@ class MetricsTests(unittest.TestCase):
                 "ETag": '"v1"',
             }
         metrics.bucket, metrics.prefix = "bucket", "new-model"
+        metrics.workers = 1
         metrics.max_rows, metrics.cache_seconds = max_rows, cache_seconds
+        metrics.stale_seconds = 120.0
         metrics._lock, metrics._refreshing = threading.Lock(), threading.Lock()
         metrics._cached, metrics._checked = None, 0.0
+        metrics._worker_cache = {}
         return metrics
 
     def test_new_model_waits_without_writing_s3(self):
@@ -110,7 +113,7 @@ class MetricsTests(unittest.TestCase):
         second = metrics.get()
         self.assertEqual(second["rows"], first["rows"])
         self.assertEqual(second["modified"], first["modified"])
-        self.assertNotEqual(second["fetched"], first["fetched"])
+        self.assertEqual(metrics.client.get_object.call_count, 2)
 
     def test_stale_cache_is_served_while_a_refresh_is_running(self):
         metrics = self.make_metrics()
@@ -136,6 +139,110 @@ class MetricsTests(unittest.TestCase):
         result = metrics.get()
         self.assertFalse(result["truncated"])
         self.assertEqual(result["total_rows"], 5)
+
+    def test_two_workers_keep_both_training_rows_and_evaluation_cohort(self):
+        metrics = self.make_metrics("NoSuchKey")
+        metrics.workers = 2
+
+        def response(reward):
+            document = {"metrics": [
+                {"episode": 1, "phase": "training", "reward_score": reward, "completion_percentage": 40},
+                {"episode": 10, "phase": "evaluation", "reward_score": reward, "completion_percentage": 100},
+            ]}
+            return {"Body": io.BytesIO(json.dumps(document).encode()),
+                    "LastModified": datetime.now(timezone.utc), "ETag": str(reward)}
+
+        metrics.client.get_object.side_effect = lambda **request: response(
+            20 if request["Key"].endswith("TrainingMetrics_1.json") else 10)
+        result = metrics.get()
+        self.assertEqual([r["episode"] for r in result["rows"]], [1, 2, 20, 20])
+        self.assertEqual([r["worker"] for r in result["rows"]], [0, 1, 0, 1])
+        self.assertEqual(result["worker_training_counts"], {"0": 1, "1": 1})
+        self.assertEqual(result["status"], "active")
+        self.assertEqual(result["source"], "new-model/metrics/TrainingMetrics.json")
+        self.assertEqual(result["sources"], ["new-model/metrics/TrainingMetrics.json",
+                                              "new-model/metrics/TrainingMetrics_1.json"])
+        keys = [call.kwargs["Key"] for call in metrics.client.get_object.call_args_list]
+        self.assertCountEqual(keys, result["sources"])
+
+    def test_multi_worker_conditional_refresh_reuses_independent_rows(self):
+        metrics = self.make_metrics("NoSuchKey")
+        metrics.workers = 2
+        calls = []
+
+        def get_object(**request):
+            calls.append(request)
+            worker = 1 if request["Key"].endswith("_1.json") else 0
+            if "IfNoneMatch" in request:
+                if worker == 0:
+                    raise ClientError({"Error": {"Code": "304"}}, "GetObject")
+                version = 2
+            else:
+                version = 1
+            return {"Body": io.BytesIO(json.dumps(sample_document(version)).encode()),
+                    "LastModified": datetime.now(timezone.utc),
+                    "ETag": f'"{worker}-{version}"'}
+
+        metrics.client.get_object.side_effect = get_object
+        first = metrics.get()
+        metrics._checked = time.monotonic() - 100
+        second = metrics.get()
+        self.assertEqual(first["worker_training_counts"], {"0": 1, "1": 1})
+        self.assertEqual(second["worker_training_counts"], {"0": 1, "1": 2})
+        self.assertEqual(len(calls), 4)
+        self.assertCountEqual([call["IfNoneMatch"] for call in calls[2:]],
+                              ['"0-1"', '"1-1"'])
+        self.assertEqual([r["worker_episode"] for r in second["rows"] if r["worker"] == 0], [1])
+
+    def test_stale_worker_is_degraded_but_keeps_cached_rows(self):
+        metrics = self.make_metrics("NoSuchKey")
+        metrics.workers = 2
+        old = datetime.now(timezone.utc).replace(year=2020)
+
+        def get_object(**request):
+            stale = request["Key"].endswith("_1.json")
+            return {"Body": io.BytesIO(json.dumps(sample_document(1)).encode()),
+                    "LastModified": old if stale else datetime.now(timezone.utc),
+                    "ETag": '"v1"'}
+
+        metrics.client.get_object.side_effect = get_object
+        result = metrics.get()
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(result["stale_workers"], [1])
+        self.assertEqual(result["healthy_workers"], 1)
+        self.assertEqual(len(result["rows"]), 2)
+
+    def test_worker_reads_happen_concurrently(self):
+        metrics = self.make_metrics("NoSuchKey")
+        metrics.workers = 2
+        both_started = threading.Barrier(2, timeout=2)
+
+        def get_object(**_request):
+            both_started.wait()
+            return {"Body": io.BytesIO(json.dumps(sample_document(1)).encode()),
+                    "LastModified": datetime.now(timezone.utc), "ETag": '"v1"'}
+
+        metrics.client.get_object.side_effect = get_object
+        self.assertEqual(metrics.get()["healthy_workers"], 2)
+
+    def test_missing_second_worker_is_reported_and_access_denied_is_not_hidden(self):
+        metrics = self.make_metrics("NoSuchKey")
+        metrics.workers = 2
+        def get_object(**request):
+            if request["Key"].endswith("_1.json"):
+                raise ClientError({"Error": {"Code": "NoSuchKey"}}, "GetObject")
+            return {"Body": io.BytesIO(b'{"metrics": []}'),
+                    "LastModified": datetime.now(timezone.utc)}
+
+        metrics.client.get_object.side_effect = get_object
+        result = metrics.get()
+        self.assertEqual(result["missing_workers"], [1])
+        self.assertEqual(result["status"], "degraded")
+        self.assertEqual(result["healthy_workers"], 1)
+        metrics = self.make_metrics("AccessDenied")
+        metrics.workers = 2
+        with self.assertRaises(ClientError):
+            metrics.get()
 
 
 if __name__ == "__main__":

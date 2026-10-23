@@ -1,6 +1,8 @@
 """Read-only DeepRacer S3 metrics dashboard, restricted to loopback."""
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import gzip
+import hashlib
 import json
 import math
 import threading
@@ -16,6 +18,7 @@ from botocore.exceptions import ClientError
 # The page refreshes every 10s; a slightly shorter TTL keeps repeated reads
 # from the same browser on the cached copy.
 CACHE_SECONDS = 8.0
+STALE_SECONDS = 120.0
 # Upper bound on rows serialized per request. A long run keeps appending to
 # TrainingMetrics.json, and the browser never needs the whole history.
 MAX_ROWS = 20000
@@ -57,14 +60,17 @@ class Metrics:
             config=Config(connect_timeout=3, read_timeout=5, retries={"max_attempts": 1}),
         )
         self.bucket, self.prefix = args.bucket, args.model_prefix.rstrip("/")
+        self.workers = getattr(args, "workers", 1)
         self.max_rows = args.max_rows
         self.cache_seconds = args.cache_seconds
+        self.stale_seconds = args.stale_seconds
         # Cache reads and refreshes use separate locks: a slow S3 call must
         # never hold the lock that HTTP handlers wait on.
         self._lock = threading.Lock()
         self._refreshing = threading.Lock()
         self._cached = None
         self._checked = 0.0
+        self._worker_cache = {}
 
     @property
     def source(self):
@@ -103,6 +109,8 @@ class Metrics:
         }
 
     def _fetch(self, previous):
+        if self.workers > 1:
+            return self._get_multi()
         request = {"Bucket": self.bucket, "Key": self.source}
         if previous and previous.get("etag"):
             request["IfNoneMatch"] = previous["etag"]
@@ -135,6 +143,78 @@ class Metrics:
             "total_rows": total, "truncated": truncated,
         }
 
+    def _worker_key(self, worker):
+        suffix = "" if worker == 0 else f"_{worker}"
+        return f"{self.prefix}/metrics/TrainingMetrics{suffix}.json"
+
+    def _read_worker(self, worker, previous):
+        request = {"Bucket": self.bucket, "Key": self._worker_key(worker)}
+        if previous and previous["etag"]:
+            request["IfNoneMatch"] = previous["etag"]
+        try:
+            response = self.client.get_object(**request)
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            if code in ("304", "NotModified") and previous:
+                return previous
+            if code == "NoSuchKey":
+                return None
+            raise
+        body = response["Body"]
+        try:
+            worker_rows = normalize(json.loads(body.read()))
+        finally:
+            body.close()
+        for row in worker_rows:
+            row["worker"] = worker
+            row["worker_episode"] = row["episode"]
+            # Training episodes restart on each simulator; evaluations share a cohort.
+            row["episode"] = (row["episode"] * self.workers if row["phase"] == "evaluation"
+                              else max(0, row["episode"] - 1) * self.workers + worker + 1)
+        return {"rows": worker_rows, "etag": response.get("ETag", ""),
+                "modified": response["LastModified"]}
+
+    def _get_multi(self):
+        """Fetch workers concurrently; retain parsed rows independently across 304s."""
+        # Only get() calls this while holding _refreshing. Commit the private
+        # cache after all reads succeed, so a failed refresh cannot partially
+        # update it. Parsed rows never go into the public API as cache metadata.
+        with ThreadPoolExecutor(max_workers=self.workers) as pool:
+            futures = {worker: pool.submit(self._read_worker, worker,
+                       self._worker_cache.get(worker)) for worker in range(self.workers)}
+            results = {worker: futures[worker].result() for worker in range(self.workers)}
+        self._worker_cache = {worker: result for worker, result in results.items() if result is not None}
+        now = datetime.now(timezone.utc)
+        rows, missing, stale, counts, worker_modified = [], [], [], {}, {}
+        sources = [self._worker_key(worker) for worker in range(self.workers)]
+        for worker, result in results.items():
+            if result is None:
+                missing.append(worker)
+                continue
+            rows.extend(result["rows"])
+            counts[str(worker)] = sum(row["phase"] == "training" for row in result["rows"])
+            modified = result["modified"]
+            worker_modified[str(worker)] = modified.isoformat()
+            if (now - modified.astimezone(timezone.utc)).total_seconds() > self.stale_seconds:
+                stale.append(worker)
+        rows.sort(key=lambda row: (row["episode"], row["phase"] == "evaluation", row["worker"]))
+        total = len(rows)
+        etags = [results[w]["etag"] if results[w] else "" for w in range(self.workers)]
+        return {
+            "model": self.prefix, "rows": rows[-self.max_rows:],
+            "source": self.source, "sources": sources,
+            "modified": max(worker_modified.values()) if worker_modified else None,
+            "fetched": now.isoformat(),
+            "etag": hashlib.sha256("|".join(etags).encode()).hexdigest(),
+            "total_rows": total, "truncated": total > self.max_rows,
+            "workers": self.workers, "worker_training_counts": counts,
+            "worker_modified": worker_modified, "missing_workers": missing,
+            "stale_workers": stale, "healthy_workers": self.workers - len(missing) - len(stale),
+            "status": ("waiting" if len(missing) == self.workers or
+                       (not rows and not missing and not stale) else
+                       "degraded" if missing or stale else "active"),
+        }
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -145,6 +225,9 @@ def main():
     parser.add_argument("--model-prefix", default="rl-deepracer-sagemaker")
     parser.add_argument("--cache-seconds", type=float, default=CACHE_SECONDS)
     parser.add_argument("--max-rows", type=int, default=MAX_ROWS)
+    parser.add_argument("--workers", type=int, choices=range(1, 11), default=1)
+    parser.add_argument("--stale-seconds", type=float, default=STALE_SECONDS,
+                        help="mark a worker stale after this many seconds without an S3 write")
     args = parser.parse_args()
     metrics = Metrics(args)
     page = Path(__file__).with_name("index.html").read_bytes()

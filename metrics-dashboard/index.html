@@ -3,21 +3,21 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>DeepRacer · 强化学习实时看板</title>
 <style>
-:root{color-scheme:dark;font-family:system-ui,"Microsoft YaHei",sans-serif;background:#0c1424;color:#e6edf7}*{box-sizing:border-box}body{max-width:1440px;margin:auto;padding:30px}header{display:flex;align-items:center;justify-content:space-between;gap:18px}h1{font-size:28px;margin:0 0 9px}p{color:#a8b7ce;margin:6px 0;font-size:14px}.badge{border:1px solid #355071;background:#14243b;border-radius:20px;padding:10px 18px;color:#8ae0bd;white-space:nowrap}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:25px 0}.card,.panel{background:#131f33;border:1px solid #263854;border-radius:14px;padding:20px}.value{font-size:34px;font-weight:650;margin-top:10px}.label{font-size:13px;color:#a8b7ce}.charts{display:grid;grid-template-columns:1fr 1fr;gap:18px}.panel h2{font-size:18px;margin:0 0 14px}.legend{display:flex;gap:18px;font-size:12px;flex-wrap:wrap;color:#a8b7ce}.legend span:before{content:"";display:inline-block;background:var(--c);width:18px;height:3px;vertical-align:middle;margin-right:6px}svg{width:100%;height:auto;display:block;margin-top:12px}text{font:12px system-ui;fill:#a8b7ce}.recent{margin-top:18px;overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:11px 12px;border-bottom:1px solid #263854}th{color:#a8b7ce}footer{padding-top:18px;color:#93a5c0;font-size:12px;line-height:1.8}.error{color:#ffba86}.empty{padding:80px 0;text-align:center;color:#93a5c0}@media(max-width:800px){body{padding:16px}header{display:block}.badge{display:inline-block;margin-top:12px}.cards{grid-template-columns:1fr 1fr}.charts{grid-template-columns:1fr}.value{font-size:27px}}
+:root{color-scheme:dark;font-family:system-ui,"Microsoft YaHei",sans-serif;background:#0c1424;color:#e6edf7}*{box-sizing:border-box}body{max-width:1440px;margin:auto;padding:30px}header{display:flex;align-items:center;justify-content:space-between;gap:18px}h1{font-size:28px;margin:0 0 9px}p{color:#a8b7ce;margin:6px 0;font-size:14px}.badge{border:1px solid #355071;background:#14243b;border-radius:20px;padding:10px 18px;color:#8ae0bd;white-space:nowrap}.badge.warn{color:#ffbf69;border-color:#a17039}.cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin:25px 0}.card,.panel{background:#131f33;border:1px solid #263854;border-radius:14px;padding:20px}.value{font-size:34px;font-weight:650;margin-top:10px}.label{font-size:13px;color:#a8b7ce}.charts{display:grid;grid-template-columns:1fr 1fr;gap:18px}.panel h2{font-size:18px;margin:0 0 14px}.legend{display:flex;gap:18px;font-size:12px;flex-wrap:wrap;color:#a8b7ce}.legend span:before{content:"";display:inline-block;background:var(--c);width:18px;height:3px;vertical-align:middle;margin-right:6px}svg{width:100%;height:auto;display:block;margin-top:12px}text{font:12px system-ui;fill:#a8b7ce}.recent{margin-top:18px;overflow:auto}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:11px 12px;border-bottom:1px solid #263854}th{color:#a8b7ce}footer{padding-top:18px;color:#93a5c0;font-size:12px;line-height:1.8}.error{color:#ffba86}.empty{padding:80px 0;text-align:center;color:#93a5c0}@media(max-width:800px){body{padding:16px}header{display:block}.badge{display:inline-block;margin-top:12px}.cards{grid-template-columns:1fr 1fr}.charts{grid-template-columns:1fr}.value{font-size:27px}}
 </style>
 <header><div><h1>DeepRacer 强化学习实时看板</h1><p id="model">正在读取模型统计…</p></div><div class="badge" id="state">读取中 · 每 10 秒刷新</div></header>
 <div class="cards">
 <div class="card"><div class="label">已记录训练回合</div><div class="value" id="episodes">—</div></div>
-<div class="card"><div class="label">最近 20 回合平均奖励</div><div class="value" id="reward">—</div></div>
-<div class="card"><div class="label">最近 20 回合平均完成率</div><div class="value" id="progress">—</div></div>
+<div class="card"><div class="label">最近 20 个训练回合平均奖励（合计）</div><div class="value" id="reward">—</div></div>
+<div class="card"><div class="label">最近 20 个训练回合平均完成率（合计）</div><div class="value" id="progress">—</div></div>
 <div class="card"><div class="label">完整跑圈 / 训练回合</div><div class="value" id="laps">—</div></div>
 </div>
 <div class="charts">
-<section class="panel"><h2>奖励曲线</h2><div class="legend"><span style="--c:#437696">单回合训练奖励</span><span style="--c:#73d7f5">20 回合移动平均</span><span style="--c:#ffbf69">评估平均奖励</span></div><div id="reward-chart"></div></section>
-<section class="panel"><h2>赛道完成率</h2><div class="legend"><span style="--c:#356f67">单回合完成率</span><span style="--c:#68dba9">20 回合移动平均</span><span style="--c:#ffbf69">评估平均完成率</span></div><div id="progress-chart"></div></section>
+<section class="panel"><h2>奖励曲线</h2><div class="legend"><span style="--c:#437696">各仿真独立回合折线</span><span style="--c:#73d7f5">最近 20 回合合计移动平均</span><span style="--c:#ffbf69">评估平均奖励</span></div><div id="reward-chart"></div></section>
+<section class="panel"><h2>赛道完成率</h2><div class="legend"><span style="--c:#356f67">各仿真独立回合折线</span><span style="--c:#68dba9">最近 20 回合合计移动平均</span><span style="--c:#ffbf69">评估平均完成率</span></div><div id="progress-chart"></div></section>
 </div>
 <section class="panel recent"><h2>最近回合</h2><table><thead><tr><th>回合</th><th>阶段</th><th>奖励</th><th>完成率</th><th>模拟耗时</th><th>结束原因</th></tr></thead><tbody id="rows"></tbody></table></section>
-<footer><div id="updated">等待第一次读取…</div><div>横轴为训练回合；评估点为同一训练回合对应的评估均值。奖励来自训练程序保存的统计，可能已经取整。模拟时间不是服务器真实耗时。完整跑圈只统计「完成一圈」且完成率 100% 的训练回合。</div><div>页面只读，不会启动、停止或修改训练。数据不更新也可能是训练正在评估、写入延迟或已停止，不代表正在持续训练。奖励更高不一定代表比赛成绩更好，请结合评估完成率判断。</div></footer>
+<footer><div id="updated">等待第一次读取…</div><div>横轴是合并后的训练回合序号；每个仿真器的原始点只连接同一仿真器，移动平均按全部训练回合计算；评估点为同一训练回合对应的评估均值。奖励来自训练程序保存的统计，可能已经取整。模拟时间不是服务器真实耗时。完整跑圈只统计「完成一圈」且完成率 100% 的训练回合。</div><div>页面只读，不会启动、停止或修改训练。数据不更新也可能是训练正在评估、写入延迟或已停止，不代表正在持续训练。奖励更高不一定代表比赛成绩更好，请结合评估完成率判断。</div></footer>
 <script>
 const el=id=>document.getElementById(id), average=a=>a.length?a.reduce((s,x)=>s+x,0)/a.length:0;
 let latest=null,busy=false;
@@ -25,7 +25,8 @@ function rolling(rows,key){return rows.map((r,i)=>({x:r.episode,y:average(rows.s
 function evalPoints(rows,key){const groups=new Map();for(const r of rows){if(!groups.has(r.episode))groups.set(r.episode,[]);groups.get(r.episode).push(r[key]);}return [...groups].sort((a,b)=>a[0]-b[0]).map(([x,a])=>({x,y:average(a)}));}
 function chart(id,training,evaluation,key,colors){
  if(!training.length){el(id).innerHTML='<div class="empty">尚无训练回合</div>';return;}
- const raw=training.map(r=>({x:r.episode,y:r[key]})),mean=rolling(training,key),ev=evalPoints(evaluation,key);
+ const raw=training.map(r=>({x:r.episode,y:r[key]})),mean=rolling(training,key),ev=evalPoints(evaluation,key),byWorker=new Map();
+ for(const r of training){const worker=r.worker??0;if(!byWorker.has(worker))byWorker.set(worker,[]);byWorker.get(worker).push({x:r.episode,y:r[key]});}
  const W=640,H=315,L=54,R=18,T=20,B=45,xmax=Math.max(1,...raw.map(p=>p.x),...ev.map(p=>p.x));
  const ymin=Math.min(0,...raw.map(p=>p.y),...ev.map(p=>p.y)),ymax=key==='progress'?100:Math.max(1,...raw.map(p=>p.y),...ev.map(p=>p.y))*1.08;
  const x=v=>L+(W-L-R)*(v/xmax),y=v=>T+(H-T-B)*(1-(v-ymin)/(ymax-ymin));
@@ -34,22 +35,24 @@ function chart(id,training,evaluation,key,colors){
  for(let i=0;i<=4;i++){let v=Math.round(xmax*i/4);s+=`<text x="${x(v)}" y="${H-20}" text-anchor="middle">${v}</text>`;}
  s+=`<text x="${W/2}" y="${H-2}" text-anchor="middle">训练回合</text>`;
  function line(points,color,width){if(points.length>1)s+=`<polyline points="${points.map(p=>`${x(p.x)},${y(p.y)}`).join(' ')}" fill="none" stroke="${color}" stroke-width="${width}"/>`;else if(points.length)s+=`<circle cx="${x(points[0].x)}" cy="${y(points[0].y)}" r="3" fill="${color}"/>`;}
- line(raw,colors[0],1.2);line(mean,colors[1],2.8);line(ev,'#ffbf69',2);for(const p of ev)s+=`<circle cx="${x(p.x)}" cy="${y(p.y)}" r="3" fill="#ffbf69"><title>回合 ${p.x}：${p.y.toFixed(2)}</title></circle>`;
+ for(const [worker,points] of byWorker)line(points,colors[0][worker%colors[0].length],1.2);
+ line(mean,colors[1],2.8);line(ev,'#ffbf69',2);for(const p of ev)s+=`<circle cx="${x(p.x)}" cy="${y(p.y)}" r="3" fill="#ffbf69"><title>回合 ${p.x}：${p.y.toFixed(2)}</title></circle>`;
  el(id).innerHTML=s+'</svg>';
 }
 function render(d){
  if(d.status==='waiting'){
-  latest=d;el('model').textContent='模型：'+d.model;el('episodes').textContent='0';el('reward').textContent='—';el('progress').textContent='—';el('laps').textContent='0 / 0';el('rows').replaceChildren();
+  latest=d;el('model').textContent='模型：'+d.model+(d.workers>1?' · '+d.workers+' 个并行仿真':'');el('episodes').textContent='0';el('reward').textContent='—';el('progress').textContent='—';el('laps').textContent='0 / 0';el('rows').replaceChildren();
   for(const id of ['reward-chart','progress-chart'])el(id).innerHTML='<div class="empty">等待新模型的第一条训练统计</div>';
-  el('state').textContent='等待新模型数据 · 每 10 秒刷新';el('state').classList.remove('error');el('updated').textContent='新模型尚无统计，可能尚未启动或正在初始化。训练开始后自动显示曲线。';return;
+  el('state').textContent='等待新模型数据 · 每 10 秒刷新';el('state').classList.remove('error','warn');el('updated').textContent='新模型尚无统计，可能尚未启动或正在初始化。训练开始后自动显示曲线。';return;
  }
  latest=d;const train=d.rows.filter(r=>r.phase==='training'),evaluation=d.rows.filter(r=>r.phase==='evaluation'),recent=train.slice(-20);
- el('model').textContent='模型：'+d.model;el('episodes').textContent=train.length;el('reward').textContent=recent.length?average(recent.map(r=>r.reward)).toFixed(2):'—';el('progress').textContent=recent.length?average(recent.map(r=>r.progress)).toFixed(1)+'%':'—';el('laps').textContent=train.filter(r=>r.status==='Lap complete'&&r.progress>=100).length+' / '+train.length;
- chart('reward-chart',train,evaluation,'reward',['#437696','#73d7f5']);chart('progress-chart',train,evaluation,'progress',['#356f67','#68dba9']);
-  el('rows').replaceChildren();for(const r of d.rows.slice(-8).reverse()){const tr=document.createElement('tr');for(const value of [r.episode,r.phase==='training'?'训练':'评估',r.reward.toFixed(2),r.progress.toFixed(1)+'%',r.seconds.toFixed(2)+' s',({'Off track':'冲出赛道','Lap complete':'完成一圈','Crashed':'碰撞','Immobilized':'卡住/无法前进'})[r.status]||r.status]){const td=document.createElement('td');td.textContent=value;tr.append(td);}el('rows').append(tr);}
+ el('model').textContent='模型：'+d.model+(d.workers>1?' · '+d.workers+' 个并行仿真':'');el('episodes').textContent=train.length;el('reward').textContent=recent.length?average(recent.map(r=>r.reward)).toFixed(2):'—';el('progress').textContent=recent.length?average(recent.map(r=>r.progress)).toFixed(1)+'%':'—';el('laps').textContent=train.filter(r=>r.status==='Lap complete'&&r.progress>=100).length+' / '+train.length;
+ chart('reward-chart',train,evaluation,'reward',[['#437696','#5f8bae','#7d709f','#907687'],'#73d7f5']);chart('progress-chart',train,evaluation,'progress',[['#356f67','#4c9484','#6978a1','#819a72'],'#68dba9']);
+  el('rows').replaceChildren();for(const r of d.rows.slice(-8).reverse()){const tr=document.createElement('tr');for(const value of [r.episode,(r.phase==='training'?'训练':'评估')+(d.workers>1?' · 仿真'+(r.worker+1):''),r.reward.toFixed(2),r.progress.toFixed(1)+'%',r.seconds.toFixed(2)+' s',({'Off track':'冲出赛道','Lap complete':'完成一圈','Crashed':'碰撞','Immobilized':'卡住/无法前进'})[r.status]||r.status]){const td=document.createElement('td');td.textContent=value;tr.append(td);}el('rows').append(tr);}
  const stamp=Date.parse(d.modified),age=Number.isFinite(stamp)?Math.max(0,Math.floor((Date.now()-stamp)/1000)):null;
- el('state').textContent=age!==null&&age>60?'数据 '+age+' 秒未更新':'统计已连接 · 每 10 秒刷新';el('state').classList.remove('error');
- el('updated').textContent='统计文件更新：'+(Number.isFinite(stamp)?new Date(stamp).toLocaleString('zh-CN',{hour12:false}):'未知')+' · 页面读取：'+new Date(d.fetched).toLocaleTimeString('zh-CN',{hour12:false})+' · 已记录评估回合：'+evaluation.length+(d.truncated?' · 仅显示最近 '+d.rows.length+' 条（共 '+d.total_rows+' 条）':'');
+ const degraded=d.status==='degraded', healthy=d.healthy_workers??d.workers;
+ el('state').textContent=degraded?'仅 '+healthy+'/'+d.workers+' 个仿真有近期统计 · 请检查':age!==null&&age>60?'数据 '+age+' 秒未更新':'统计已连接 · 每 10 秒刷新';el('state').classList.toggle('warn',degraded);el('state').classList.remove('error');
+ el('updated').textContent='统计文件更新：'+(Number.isFinite(stamp)?new Date(stamp).toLocaleString('zh-CN',{hour12:false}):'未知')+' · 页面读取：'+new Date(d.fetched).toLocaleTimeString('zh-CN',{hour12:false})+' · 已记录评估回合：'+evaluation.length+(d.truncated?' · 仅显示最近 '+d.rows.length+' 条（共 '+d.total_rows+' 条）':'')+(d.workers>1?' · 各仿真训练回合：'+Object.entries(d.worker_training_counts||{}).map(([w,n])=>(Number(w)+1)+':'+n).join('，'):'')+(d.missing_workers?.length?' · 缺失仿真：'+d.missing_workers.map(w=>w+1).join('，'):'')+(d.stale_workers?.length?' · 超时未写入仿真：'+d.stale_workers.map(w=>w+1).join('，'):'');
 }
 async function refresh(){if(busy)return;busy=true;try{const response=await fetch('/api/metrics',{cache:'no-store'}),d=await response.json();if(!response.ok)throw Error(d.error||'读取失败');render(d);}catch(e){el('state').textContent='读取失败 · 自动重试';el('state').classList.add('error');el('updated').textContent=e.message+' 上一次成功的数据保留在页面中。';}finally{busy=false;}}
 refresh();setInterval(refresh,10000);
