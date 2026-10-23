@@ -37,6 +37,15 @@ def arc(radius, speed, steering=5.0):
 
 
 class PaceV5Tests(unittest.TestCase):
+    def test_action_ladder_matches_the_running_model(self):
+        # Pins the ladder so a metadata edit cannot silently undo the speed work.
+        import json
+        metadata = json.loads((Path(__file__).resolve().parents[1]
+                               / "custom_files/speed_2018_pace_v5/model_metadata.json").read_text())
+        ladder = [(a["steering_angle"], a["speed"]) for a in metadata["action_space"]]
+        self.assertEqual(ladder, [(-30, 2.0), (-15, 2.7), (0, 2.7), (15, 2.7), (30, 2.0),
+                                  (-15, 3.6), (0, 3.6), (15, 3.6), (-5, 4.3), (0, 4.3), (5, 4.3)])
+
     def test_h1_medium_corner_is_faster_than_v4(self):
         # Same geometry, same speed: the higher grip target must pay more for 3.6 m/s.
         params = arc(3.0, 3.6)
