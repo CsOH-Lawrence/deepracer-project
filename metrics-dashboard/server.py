@@ -1,6 +1,7 @@
 """Read-only DeepRacer S3 metrics dashboard, restricted to loopback."""
 import argparse
 import gzip
+import hashlib
 import json
 import math
 import threading
@@ -57,6 +58,7 @@ class Metrics:
             config=Config(connect_timeout=3, read_timeout=5, retries={"max_attempts": 1}),
         )
         self.bucket, self.prefix = args.bucket, args.model_prefix.rstrip("/")
+        self.workers = getattr(args, "workers", 1)
         self.max_rows = args.max_rows
         self.cache_seconds = args.cache_seconds
         # Cache reads and refreshes use separate locks: a slow S3 call must
@@ -103,6 +105,8 @@ class Metrics:
         }
 
     def _fetch(self, previous):
+        if self.workers > 1:
+            return self._get_multi()
         request = {"Bucket": self.bucket, "Key": self.source}
         if previous and previous.get("etag"):
             request["IfNoneMatch"] = previous["etag"]
@@ -135,6 +139,49 @@ class Metrics:
             "total_rows": total, "truncated": truncated,
         }
 
+    def _get_multi(self):
+        """Read every simulator's metrics without hiding missing workers or S3 errors."""
+        rows, sources, modified, etags, missing = [], [], [], [], []
+        counts = {}
+        for worker in range(self.workers):
+            suffix = "" if worker == 0 else f"_{worker}"
+            key = f"{self.prefix}/metrics/TrainingMetrics{suffix}.json"
+            try:
+                response = self.client.get_object(Bucket=self.bucket, Key=key)
+            except ClientError as exc:
+                if exc.response.get("Error", {}).get("Code") == "NoSuchKey":
+                    missing.append(worker)
+                    continue
+                raise
+            body = response["Body"]
+            try:
+                worker_rows = normalize(json.loads(body.read()))
+            finally:
+                body.close()
+            counts[str(worker)] = sum(row["phase"] == "training" for row in worker_rows)
+            for row in worker_rows:
+                row["worker"] = worker
+                row["worker_episode"] = row["episode"]
+                # Training episode numbers restart on each simulator. Give them
+                # separate chart positions; keep one position for each evaluation cohort.
+                row["episode"] = (row["episode"] * self.workers if row["phase"] == "evaluation"
+                                  else max(0, row["episode"] - 1) * self.workers + worker + 1)
+            rows.extend(worker_rows)
+            sources.append(key)
+            modified.append(response["LastModified"].isoformat())
+            etags.append(response.get("ETag", ""))
+        rows.sort(key=lambda row: (row["episode"], row["phase"] == "evaluation", row["worker"]))
+        total = len(rows)
+        return {
+            "model": self.prefix, "rows": rows[-self.max_rows:],
+            "source": sources, "modified": max(modified) if modified else None,
+            "fetched": datetime.now(timezone.utc).isoformat(),
+            "etag": hashlib.sha256("|".join(etags).encode()).hexdigest(),
+            "total_rows": total, "truncated": total > self.max_rows,
+            "workers": self.workers, "worker_training_counts": counts,
+            "missing_workers": missing, "status": "active" if rows else "waiting",
+        }
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -145,6 +192,7 @@ def main():
     parser.add_argument("--model-prefix", default="rl-deepracer-sagemaker")
     parser.add_argument("--cache-seconds", type=float, default=CACHE_SECONDS)
     parser.add_argument("--max-rows", type=int, default=MAX_ROWS)
+    parser.add_argument("--workers", type=int, choices=range(1, 11), default=1)
     args = parser.parse_args()
     metrics = Metrics(args)
     page = Path(__file__).with_name("index.html").read_bytes()

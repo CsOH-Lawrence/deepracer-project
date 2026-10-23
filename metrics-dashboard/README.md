@@ -14,6 +14,14 @@ python3 -m venv .venv
 
 地址仅绑定 `127.0.0.1`。已有模型名必须与真实 S3 前缀一致；找不到模型指标时显示等待，不会写入 S3 或启动训练。若 AWS profile 不可读，应使用拥有该 profile 的用户运行。
 
+## 两个或更多并行仿真器
+
+上游 deepracer-for-cloud 支持多个 Robomaker 仿真器给一个训练器采样。先在未运行训练时把 `system.env` 中的 `DR_WORKERS=1` 改为 `DR_WORKERS=2`，备份 `run.env`，再为续训建立**全新模型前缀**，不要覆盖旧前缀。20 回合一次参数更新、2 个仿真器时，可以把 `DR_TRAIN_ROUND_ROBIN_ADVANCE_DIST` 设为 `0.10`，使每个仿真器的 10 个起点覆盖赛道。训练的停止与续训命令要以所用上游版本为准。切换前核对源模型已保存的 checkpoint、剩余磁盘和 GPU 内存；切换后验证两个仿真器都产生训练回合，并看到一次新参数更新。
+
+看板启动时增加 `--workers 2`，会分别读取 `metrics/TrainingMetrics.json` 与 `metrics/TrainingMetrics_1.json`，汇总曲线并保留每条记录的 `worker` 和 `worker_episode`。页面显示各仿真器回合数和缺失的仿真器。这里的横轴把每个仿真器的回合放到相邻位置，评估试次归入同一组；它不是实际发生时间。`--workers` 默认 1，旧的单仿真训练照常使用。
+
+本次 RTX 3090、16 vCPU 机器上，短窗口采样约从 9.8 提高到 19.9 步/秒；采样期间单仿真 CPU 约 3 核，两仿真各约 3–4 核，GPU 约 12%。这不是长期基准，仿真与评估时长会波动；增加仿真器也不能直接修复车辆左右摇晃。训练时的探索动作可能造成摇晃，应结合评估画面、动作空间与完成率判断。详见[上游多仿真器说明](https://aws-deepracer-community.github.io/deepracer-for-cloud/multi_worker.html)。
+
 ## 本机访问
 
 将占位符换成自己的 SSH 用户和主机，先通过可信渠道核对 SSH 主机密钥：
